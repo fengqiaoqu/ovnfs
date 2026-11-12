@@ -805,7 +805,7 @@ func (x *exportFS) ReadDir(_ <-chan struct{}, in *gofuse.ReadIn, out *gofuse.Dir
 	return x.readDir(in, out, false)
 }
 
-// ReadDirPlus lists names with attributes from the snapshot.
+// ReadDirPlus lists names with attributes from a fresh stat.
 func (x *exportFS) ReadDirPlus(_ <-chan struct{}, in *gofuse.ReadIn, out *gofuse.DirEntryList) gofuse.Status {
 	return x.readDir(in, out, true)
 }
@@ -837,12 +837,21 @@ func (x *exportFS) readDir(in *gofuse.ReadIn, out *gofuse.DirEntryList, plus boo
 		if eo == nil {
 			break
 		}
-		if e.info != nil {
-			eo.NodeId = e.ino
-			x.fill(&eo.Attr, e.ino, e.info)
-			eo.SetEntryTimeout(TTL)
-			eo.SetAttrTimeout(attrTTL(&eo.Attr))
+		// Attributes come from a fresh stat, not the OpenDir snapshot: the
+		// kernel applies them over writes it saw before this request. A name
+		// replaced since OpenDir keeps its listing entry without attributes.
+		if e.info == nil {
+			continue
 		}
+		p := path.Join(d.path, e.name)
+		info, err := x.nodes.Lstat(p)
+		if err != nil || x.nodes.ID(p) != e.ino {
+			continue
+		}
+		eo.NodeId = e.ino
+		x.fill(&eo.Attr, e.ino, info)
+		eo.SetEntryTimeout(TTL)
+		eo.SetAttrTimeout(attrTTL(&eo.Attr))
 	}
 	return gofuse.OK
 }

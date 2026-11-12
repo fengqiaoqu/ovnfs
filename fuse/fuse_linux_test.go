@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"os"
@@ -336,6 +337,59 @@ func TestCheckoutReadWrite(t *testing.T) {
 	var sfs unix.Statfs_t
 	if err := unix.Statfs(f.path("alpha"), &sfs); err != nil || sfs.Blocks == 0 || sfs.Bsize == 0 {
 		t.Fatalf("statfs = %+v, %v", sfs, err)
+	}
+}
+
+// TestReadDirPlusSeesWriteAfterOpenDir checks that a file written while
+// another process has its directory open is not reported empty after that
+// process lists it. OpenDir used to snapshot sizes, and READDIRPLUS answered
+// with those, so the kernel kept the stale i_size for the attribute TTL.
+func TestReadDirPlusSeesWriteAfterOpenDir(t *testing.T) {
+	f := newFixture(t, map[string]string{"file": "lower"})
+	dir := f.path("alpha/out")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name := filepath.Join(dir, "obj.o")
+	wf, err := os.OpenFile(name, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	df, err := os.OpenFile(dir, os.O_RDONLY, 0)
+	if err != nil {
+		wf.Close()
+		t.Fatal(err)
+	}
+	defer df.Close()
+	if _, err := wf.Write(bytes.Repeat([]byte{'x'}, 100000)); err != nil {
+		wf.Close()
+		t.Fatal(err)
+	}
+	if err := wf.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := df.ReadDir(-1); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rf, err := os.Open(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rf.Close()
+	fi, err := rf.Stat()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(rf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() != 100000 || fi.Size() != 100000 || len(body) != 100000 {
+		t.Fatalf("after listing an open dir: stat %d fstat %d read %d; want 100000", info.Size(), fi.Size(), len(body))
 	}
 }
 
