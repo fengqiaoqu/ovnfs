@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"testing"
 
@@ -251,15 +250,63 @@ func TestBaseIdentities(t *testing.T) {
 		if !ok || id.Space() != ident.State {
 			t.Fatalf("snapshot file identity = %v, %v; want State", id, ok)
 		}
-		if runtime.GOOS == "darwin" {
-			if got, ok := view.Locate(id); !ok || got != "node_modules/pkg/index.js" {
-				t.Errorf("locate snapshot file = %q, %v", got, ok)
-			}
+		if got, ok := view.Locate(id); !ok || got != "node_modules/pkg/index.js" {
+			t.Errorf("locate snapshot file = %q, %v", got, ok)
 		}
 	}
 	hidden, _ := ident.New(ident.Capture, uint64(b.index.nodes))
 	if _, ok := view.Locate(hidden); ok {
 		t.Error("an identity beyond the capture was located")
+	}
+}
+
+// TestLocateServedSnapshotFiles maps a local-class snapshot file back to its
+// path after the view has served it, including on volumes that cannot clone
+// (local roots are copied even then). A State identity never served is not found.
+func TestLocateServedSnapshotFiles(t *testing.T) {
+	repo, dir := repository(t)
+	writeTestFile(t, filepath.Join(dir, ".env"), "SECRET=1")
+	writeTestFile(t, filepath.Join(dir, "key.pem"), "tracked-key")
+	b, _ := createTestBase(t, repo, nil)
+	view := b.Bottom(b.TakeCaches("c1"))
+	for _, p := range []string{".env", "key.pem"} {
+		info, err := view.Lstat(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		id, ok := ident.Of(info)
+		if !ok || id.Space() != ident.State {
+			t.Fatalf("%s: identity %v, %v; want State", p, id, ok)
+		}
+		if got, ok := view.Locate(id); !ok || got != p {
+			t.Errorf("locate %s = %q, %v; want %q", p, got, ok, p)
+		}
+	}
+	// Listing also records children, so Locate works from a ReadDir alone.
+	names, err := view.ReadDir("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env os.FileInfo
+	for _, info := range names {
+		if info.Name() == ".env" {
+			env = info
+			break
+		}
+	}
+	if env == nil {
+		t.Fatal("ReadDir missed .env")
+	}
+	id, ok := ident.Of(env)
+	if !ok {
+		t.Fatal("listed .env has no identity")
+	}
+	if got, ok := view.Locate(id); !ok || got != ".env" {
+		t.Errorf("locate listed .env = %q, %v; want .env", got, ok)
+	}
+	hidden, _ := ident.New(ident.State, ident.MaxValue)
+	if _, ok := view.Locate(hidden); ok {
+		t.Error("an identity never served was located")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 
 	"github.com/stencil-hq/ovnfs/internal/clone"
 	"github.com/stencil-hq/ovnfs/internal/hostfile"
+	"github.com/stencil-hq/ovnfs/internal/ident"
 	"github.com/stencil-hq/ovnfs/internal/search/fsys"
 	"github.com/stencil-hq/ovnfs/rules"
 )
@@ -62,7 +63,12 @@ type Caches struct {
 	proofsMu sync.Mutex
 	proofs   map[string]bool
 	locator  locator // resolves State identities to tree paths (platform)
-	shared   bool    // take: the folder and the snapshot share a volume
+	// served maps a snapshot file's State inode to the tree-relative slash
+	// path at which the caches served it, so locate can find it later
+	// without walking the snapshot (used where the kernel has no fsgetpath).
+	servedMu sync.Mutex
+	served   map[uint64]string
+	shared   bool // take: the folder and the snapshot share a volume
 }
 
 // cacheRoot is a root the snapshot holds, as the folder had it when the
@@ -271,6 +277,22 @@ func (b *Base) folderRoot(p string) (os.FileInfo, bool) {
 // path names p's entry in the snapshot's tree.
 func (c *Caches) path(p string) string { return filepath.Join(c.tree, filepath.FromSlash(p)) }
 
+// remember records p as the path of a served snapshot entry so Locate can
+// find it later by its State identity. Capture-class directory roots are
+// ignored: they are not looked up this way.
+func (c *Caches) remember(info os.FileInfo, p string) {
+	id, ok := ident.Of(info)
+	if !ok || id.Space() != ident.State {
+		return
+	}
+	c.servedMu.Lock()
+	defer c.servedMu.Unlock()
+	if c.served == nil {
+		c.served = make(map[uint64]string)
+	}
+	c.served[id.Value()] = p
+}
+
 // lstat serves p, at or below the snapshot's root (index node n), as the
 // snapshot holds it. A directory root
 // presents the folder's metadata of when the snapshot began and its Capture
@@ -289,7 +311,12 @@ func (c *Caches) lstat(p, root string, n uint32) (os.FileInfo, error) {
 	if p != root && (!r.Mode.IsDir() || !c.dirsBelow(root, p)) {
 		return nil, absent(p)
 	}
-	return c.files.lstat(p)
+	info, err := c.files.lstat(p)
+	if err != nil {
+		return nil, err
+	}
+	c.remember(info, p)
+	return info, nil
 }
 
 // list returns the entries of snapshot directory p, once complete.
@@ -307,7 +334,13 @@ func (c *Caches) list(p string) ([]os.FileInfo, error) {
 			return nil, err
 		}
 		host := filepath.Join(dir, e.Name())
-		out = append(out, stateInfo(hostfile.Linked(info, host), host))
+		info = stateInfo(hostfile.Linked(info, host), host)
+		child := e.Name()
+		if p != "" {
+			child = p + "/" + child
+		}
+		c.remember(info, child)
+		out = append(out, info)
 	}
 	return out, nil
 }

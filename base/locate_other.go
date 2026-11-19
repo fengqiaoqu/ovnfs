@@ -2,10 +2,16 @@
 
 package base
 
-// locator is empty: only macOS maps an inode to its path (fsgetpath(2)).
-// Elsewhere the overlay resolves the State identities of snapshot files from
-// the entries it has served.
+// locator is unused here: only macOS maps an inode to its path (fsgetpath(2)).
+// Elsewhere locate uses the paths of snapshot entries the caches have already
+// served (see [Caches.remember]).
 type locator struct{}
 
-// locate reports false: see [locator].
-func (c *Caches) locate(uint64) (string, bool) { return "", false }
+// locate returns the tree-relative slash path of a served snapshot entry
+// with inode ino.
+func (c *Caches) locate(ino uint64) (string, bool) {
+	c.servedMu.Lock()
+	defer c.servedMu.Unlock()
+	p, ok := c.served[ino]
+	return p, ok
+}

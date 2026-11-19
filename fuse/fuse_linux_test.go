@@ -633,3 +633,17 @@ func TestSpecialNodes(t *testing.T) {
 		}
 	}
 }
+
+// TestOpenSnapshotLocalFiles opens files a checkout serves from its cache
+// snapshot. LOOKUP records their State identity so OPEN can find the path
+// instead of returning ESTALE (https://github.com/stencil-hq/ovnfs/issues/90).
+func TestOpenSnapshotLocalFiles(t *testing.T) {
+	f := newFixture(t, map[string]string{
+		"README.md": "hello",
+		".env":      "SECRET=1",
+		"key.pem":   "tracked-key",
+	})
+	f.read(t, "alpha/README.md", "hello")
+	f.read(t, "alpha/.env", "SECRET=1")
+	f.read(t, "alpha/key.pem", "tracked-key")
+}
